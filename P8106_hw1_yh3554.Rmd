@@ -1,0 +1,217 @@
+---
+title: "P8106_HW1_yh3554"
+author: "Yi Huang"
+date: "2023-02-22"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
+library(caret)
+library(glmnet)
+library(pls)
+```
+
+# Data Science II Homework 1
+
+
+In this exercise, we predict the sale price of a house using its other characteristics. The training data are in “housing train.csv”, and the test data are in “housing test.csv”. The response is in the column “Sale price”. Among the 25 feature variables, some are numeric features, such as living area square feet or first floor square feet, and some are categorical features, such as the overall material and finish of the house or kitchen quality. A detailed description of the variables is in “dictionary.txt”.
+
+
+### load data
+```{r}
+train_dat <- read.csv("housing_training.csv")
+train_dat <- na.omit(train_dat)
+test_dat <- read.csv("housing_test.csv") 
+test_dat <- na.omit(test_dat)
+
+train_x <- model.matrix(Sale_Price~., data = train_dat)[,-1]
+train_y <- train_dat$Sale_Price
+
+test_x <- model.matrix(Sale_Price~., data = test_dat)[,-1]
+test_y <- test_dat$Sale_Price
+```
+
+### (a) Fit a linear model using least squares on the training data.
+
+```{r, warning=FALSE}
+##seed
+set.seed(123)
+
+##resampling  method
+ctrl5 <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+
+##fit linear model on training data
+linear_model <- train(Sale_Price~., 
+               data = train_dat, 
+               method = "lm", 
+               trControl = ctrl5)
+
+##evaluate the model on test data
+pred_lm <- predict(linear_model, newdata = test_dat)
+##calculate MSE
+mean((pred_lm - test_y)^2)
+##calculate RMSE
+sqrt(mean((pred_lm - test_y)^2)) 
+RMSE(pred_lm, test_dat$Sale_Price)
+```
+
+### (b) Fit a lasso model on the training data. Report the selected tuning parameter and the test error. When the 1SE rule is applied, how many predictors are included in the model?
+
+#### fit a lasso model (use tune parameter that minimize mean cross-validated error)
+```{r}
+set.seed(123)
+cv.lasso <- cv.glmnet(train_x, train_y,
+                     alpha = 1,
+                     lambda = exp(seq(-1, 5, length = 100)))
+cv.lasso$lambda.min
+cv.lasso$lambda.1se
+
+lasso_fit <- train(train_x, train_y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = 1,
+                                          lambda = exp(seq(-1, 5, length = 100))),
+                   trControl = ctrl5)
+plot(lasso_fit, xTrans = log)
+```
+
+#### best tune
+```{r}
+lasso_fit$bestTune
+```
+
+#### test error
+```{r}
+lasso_pred <- predict(lasso_fit, newdata = test_x)
+
+##calculate MSE
+mean((lasso_pred - test_y)^2)
+##calculate RMSE
+sqrt(mean((lasso_pred - test_y)^2)) 
+RMSE(lasso_pred, test_dat$Sale_Price)
+```
+
+The tune parameter is 59.7942, and the mean square test error (MSE) is 440520057, test RMSE is 20988.57.
+
+#### apply 1se rule to lasso
+```{r}
+set.seed(123)
+##resampling method
+ctrl6 <- trainControl(method = "repeatedcv", selectionFunction = "oneSE", number = 10, repeats = 10)
+lasso_fit_1se <- train(train_x, train_y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = 1,
+                                          lambda = exp(seq(-1, 5, length = 100))),
+                   trControl = ctrl6)
+lasso_fit_1se$bestTune
+coef(lasso_fit_1se$finalModel, lasso_fit_1se$bestTune$lambda)
+plot(cv.lasso)
+```
+
+While appying 1se rule, there are 36 predictors in the model. The coefficient of Second_Flr_SF, Fireplace_QuGood, Fireplace_QuNo_Fireplace variables were shrink to zero.
+
+
+### (c) Fit an elastic net model on the training data. Report the selected tuning parameters and the test error. Is it possible to apply the 1SE rule to select the tuning parameters?
+
+#### fit elastic new model
+```{r}
+set.seed(123)
+enet_fit <- train(train_x, train_y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = seq(0, 1, length = 21),
+                                          lambda = exp(seq(5,-5, length = 100))),
+                   trControl = ctrl5)
+
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+                    superpose.line = list(col = myCol))
+plot(enet_fit, par.settings = myPar)
+
+## what if chose alpha between 0.05 and 1
+enet_fit_2 <- train(train_x, train_y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = seq(0.05, 1, length = 21),
+                                          lambda = exp(seq(5,-5, length = 100))),
+                   trControl = ctrl5)
+plot(enet_fit_2, par.settings = myPar)
+
+##best tune
+enet_fit$bestTune
+
+##test error
+enet_pred <- predict(enet_fit, newdata = test_x)
+mean((enet_pred - test_y)^2)
+##calculate RMSE
+sqrt(mean((enet_pred - test_y)^2)) 
+RMSE(enet_pred, test_dat$Sale_Price)
+```
+
+The selected tune parameter is 148.4132 with alpha 0.35, and the test MSE is 440311482, test RMSE is 20983.6.
+
+#### apply 1se rule
+```{r}
+set.seed(123)
+enet_fit_1se <- train(train_x, train_y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = seq(0, 1, length = 21),
+                                          lambda = exp(seq(5,-5, length = 100))),
+                   trControl = ctrl6)
+
+enet_fit_1se$bestTune
+coef(enet_fit_1se$finalModel, enet_fit_1se$bestTune$lambda)
+
+enet_pred_1se <- predict(enet_fit_1se, newdata = test_x)
+RMSE(enet_pred_1se, test_dat$Sale_Price)
+```
+The model with 1SE rule has a smaller alpha value 0.05, but it returns to the same lambda value 148.4143 as the default method. Apply 1se rule cannot reduce the model complexity in elastic net model. Thus it is not necessary to use 1se in elastic net model.
+
+### (d) Fit a partial least squares model on the training data and report the test error. How many components are included in your model?
+
+#### fit partial least squares model
+```{r}
+set.seed(123)
+pls_fit <- train(train_x, train_y,
+                 method = "pls",
+                 tuneGrid = data.frame(ncomp = 1:39),
+                 trControl = ctrl5,
+                 preProcess = c("center", "scale"))
+```
+
+#### test error
+```{r}
+pls_pred <- predict(pls_fit, newdata = test_x)
+mean((pls_pred - test_y)^2)
+##calculate RMSE
+sqrt(mean((pls_pred - test_y)^2)) 
+RMSE(pls_pred, test_dat$Sale_Price)
+```
+
+The test MSE is `r round(mean((pls_pred - test_y)^2),2)`, test RMSE is `r round(RMSE(pls_pred, test_dat$Sale_Price),2)`.
+
+#### plot the number of component in model
+
+```{r, warning = FALSE}
+ggplot(pls_fit, highlight = TRUE)
+```
+
+The plot shows there are 8 components in partial least squares model.
+
+
+### (e) Which model will you choose for predicting the response? Why?
+
+#### Comparing models
+```{r}
+set.seed(123)
+lm.fit <- train(train_x, train_y,
+                method = "lm",
+                trControl = ctrl5)
+resamp <- resamples(list(lm = linear_model, lasso = lasso_fit, lasso_1se = lasso_fit_1se, enet = enet_fit, pls = pls_fit))
+summary(resamp)
+
+parallelplot(resamp, metric = "RMSE")
+
+bwplot(resamp, metric = "RMSE")
+```
+
+The best model for predicting the sale price of a house is the lasso model since it has the lowest mean value of RMSE comparing to all other models.
+
