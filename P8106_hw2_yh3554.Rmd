@@ -1,0 +1,367 @@
+---
+title: "P8106_HW2_yh3554_w/Correction"
+author: "Yi Huang"
+date: "2023-03-12"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  keep_tex: true
+  html_document:
+header-includes:
+- \usepackage{hyperref}
+- \hypersetup{colorlinks=false, linktoc=all, linkcolor=red}
+- \AtBeginDocument{\addtocontents{toc}{\protect\hypertarget{mylink}{}\hspace{0.25in}\hspace{0.5in}\par}}
+- \usepackage{placeins}
+- \usepackage{caption}
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
+```
+
+\newpage
+
+```{r}
+library(tidyverse)
+library(caret)
+library(splines)
+library(mgcv)
+library(earth)
+library(pdp)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+# Data Science II Homework 2
+
+In this exercise, we build nonlinear models using the “College” data. The dataset contains statistics for 565 US Colleges from a previous issue of US News and World Report. The response variable is the out-of-state tuition (Outstate). The predictors are\
+\
+- Apps: Number of applications received\
+- Accept: Number of applications accepted\
+- Enroll: Number of new students enrolled\
+- Top10perc: Pct. new students from top 10% of H.S. class\
+- Top25perc: Pct. new students from top 25% of H.S. class\
+- F.Undergrad: Number of fulltime undergraduates\
+- P.Undergrad: Number of parttime undergraduates\
+- Room.Board: Room and board costs\
+- Books: Estimated book costs\
+- Personal: Estimated personal spending\
+- PhD: Pct. of faculty with Ph.D.’s\
+- Terminal: Pct. of faculty with terminal degree\
+- S.F.Ratio: Student/faculty ratio\
+- perc.alumni: Pct. alumni who donate\
+- Expend: Instructional expenditure per student\
+- Grad.Rate: Graduation rate\
+\
+Partition the dataset into two parts: training data (80%) and test data (20%).
+
+# (a) 
+Fit smoothing spline models using perc.alumni as the only predictor of Outstate for a range of degrees of freedom, as well as the degree of freedom obtained by generalized cross-validation, and plot the resulting fits. Describe the results obtained.
+
+## Fit smoothing spline models with different df
+```{r}
+# set seed for reproducibility
+set.seed(123)
+
+# load data
+dat <- read.csv("data/College.csv")
+dat <- na.omit(dat)
+head(dat)
+summary(dat)
+
+# specify rows of training data (80% of the dataset)
+train_rows <- createDataPartition(dat$Outstate, 
+                              p = 0.8,
+                              list = F)
+
+# training data
+dat_train <- dat[train_rows, ]
+x <- dat_train %>% select(-College, -Outstate)
+y <- dat_train$Outstate
+
+# test data
+dat_test <- dat[-train_rows, ]
+x2 <- dat_test %>% select(-College, -Outstate)
+y2 <- dat_test$Outstate
+
+# resampling method 10-fold cross-validation
+ctrl1 <- trainControl(method = "cv", number = 10)
+
+# scatter plot
+featurePlot(x,y,
+            plot = "scatter",
+            span = 0.5,
+            labels = c("Predictors", "Outstate"),
+            type = c("p", "smooth"),
+            layout = c(4,4))
+
+# fit smoothing spline model
+fit.ss_df3 <- smooth.spline(dat_train$perc.alumni, dat_train$Outstate, df = 3)
+fit.ss_df5 <- smooth.spline(dat_train$perc.alumni, dat_train$Outstate, df = 5)
+fit.ss_df8 <- smooth.spline(dat_train$perc.alumni, dat_train$Outstate, df = 8)
+```
+
+## Fit smoothing spline models with df obtained by generalized cross-validation
+
+```{r}
+set.seed(123)
+
+# fit smoothing spline model with df obtained by generalized cross-validation
+fit.ss_cv <- smooth.spline(dat_train$perc.alumni, dat_train$Outstate) 
+
+# retrieve df obtained by generalized cross-validation
+fit.ss_cv$df
+fit.ss_cv$lambda
+```
+
+The degree of freedom obtained by generalized cross-validation is `r round(fit.ss_cv$df, 4)`.
+
+## Plot the result fittings
+
+```{r}
+range(dat$perc.alumni)
+# Note that the range of pgg45 is [2,64], and this is only for 
+# illustrating fitted curve beyond the boundary knots
+perc.alumni.grid <- seq(from = 0, to = 65, by = 1)
+
+# df = 3
+pred.ss_df3 <- predict(fit.ss_df3,
+                   x = perc.alumni.grid)
+
+pred.ss.df_3 <- data.frame(pred = pred.ss_df3$y,
+                         perc.alumni = perc.alumni.grid)
+# df = 5
+pred.ss_df5 <- predict(fit.ss_df5,
+                   x = perc.alumni.grid)
+
+pred.ss.df_5 <- data.frame(pred = pred.ss_df5$y,
+                         perc.alumni = perc.alumni.grid)
+
+# df = 8
+pred.ss_df8 <- predict(fit.ss_df8,
+                   x = perc.alumni.grid)
+
+pred.ss.df_8 <- data.frame(pred = pred.ss_df8$y,
+                         perc.alumni = perc.alumni.grid)
+
+# df obtained by generalized cross-validation
+pred.ss.cv <- predict(fit.ss_cv,
+                   x = perc.alumni.grid)
+
+pred.ss.df_cv <- data.frame(pred = pred.ss.cv$y,
+                         perc.alumni = perc.alumni.grid)
+# create scatter plot object 'p' of the data points
+# perc.alumni on the x-axis and Outstate on the y-axis
+p <- ggplot(data = dat, aes(x = perc.alumni, y = Outstate)) +
+  geom_point(color = rgb(.2, .4, .2, .5))
+```
+
+## Plot for df = 3
+
+```{r}
+# Plot for df = 3
+p +
+  geom_line(aes(x = perc.alumni, y = pred), data = pred.ss.df_3,
+            color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+The plot of smoothing spline fit for df = 3 is slightly curvy, where `perc.alomni` and `Outstate` have positive relationship. There is a curve around midpoint between 20 and 40 from x-axis, and everywhere else are almost linear. 
+
+## Plot for df = 5
+
+```{r}
+p +
+  geom_line(aes(x = perc.alumni, y = pred), data = pred.ss.df_5,
+            color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+The plot of the smoothing spline fit for df = 5 has a bit of a curve in the first half of the line, making it non-linear. There is a positive relationship between `perc.alomni` and `Outstate`. The plot is non-linear because the specified df is 5, which greater than 2 and makes the plot non-linear and slightly curvy.
+
+## Plot for df = 8
+
+```{r}
+p +
+  geom_line(aes(x = perc.alumni, y = pred), data = pred.ss.df_8,
+            color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+The plot of the smoothing spline fit for df = 8 is the most non-linear since it has the highest df from above models. There is a positive relationship between `perc.alomni` and `Outstate`, with a larger curve in the first half of the line (near the lower values of `perc.alomni` and `Outstate`). The plot is non-linear because the specified df is 8, which quite a bit larger than 2 and makes the plot non-linear and curvy.
+
+## Plot for df obtained by cv
+
+```{r}
+p +
+  geom_line(aes(x = perc.alumni, y = pred), data = pred.ss.df_cv,
+            color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+The plot of smoothing spline fit the df obtained by cv is the most linear, with a positive relationship between `perc.alomni` and `Outstate`. The plot is linear because the specified df is close to 2, making it similar to a second degree polynomial resulting in a linear plot.\
+\
+Thus, we can see that when the degrees of freedom is small, the fitted line is close to linear, and it gets more and more wiggly as degrees of freedom increase.
+
+
+
+# (b)
+Fit a generalized additive model (GAM) using all the predictors. Does your GAM model include all the predictors? Plot the results and explain your findings. Report the test error.
+
+```{r}
+set.seed(123)
+
+# fit GAM using all predictors
+gam.fit_all <- train(x, y,
+                 method = "gam",
+                 trControl = ctrl1,
+                 control = gam.control(maxit = 200))
+gam.fit_all$bestTune
+
+gam.fit_all$finalModel
+```
+
+There are 13 predictors in the final GAM model obtained from selection of all predictors with GCV score 2598870, where the 2nd predictor `Terminal`, 7th predictor `Top25perc`, and 10th predictor `P.Undergrad` are zero.
+
+```{r}
+# fit GAM using selection specification
+gam.fit_select <- train(x, y, # test dataset
+                 method = "gam",
+                 tuneGrid = data.frame(method = "GCV.Cp", select = c(TRUE)),
+                 trControl = ctrl1, # 10-fold CV
+                 control = gam.control(maxit = 200))  # Adjusted due to failure to converge at default setting
+gam.fit_select$bestTune
+
+gam.fit_select$finalModel
+```
+
+Same results as before. There are 13 predictors in the final GAM model obtained from selection of all predictors with GCV score 2598870, where the 2nd predictor `Terminal`, 7th predictor `Top25perc`, and 10th predictor `P.Undergrad` are zero. In conclusion, the full model contains all 16 predictors, while the selection specification model has 13 predictors, where the 2nd predictor `Terminal`, 7th predictor `Top25perc`, and 10th predictor `P.Undergrad` are removed from the final model. 
+
+## Plot
+```{r}
+# Formula based on final GAM model with 13 predictors (gam.fit_select)
+gam.m1 <- gam(Outstate ~ s(perc.alumni) + s(Books) + s(Top10perc) + 
+                s(Grad.Rate) + s(PhD) + s(S.F.Ratio) + s(Personal) + 
+                s(Room.Board) + s(Enroll) + s(Accept) + s(Apps) + 
+                s(F.Undergrad) + s(Expend),
+              data = dat_train) # training dataset
+summary(gam.m1)
+
+plot(gam.m1)
+
+vis.gam(gam.m1, view = c("Apps", "Accept"), 
+        color = "topo")
+```
+
+According to the p value from summary table, some predictors may not be significant in the GAM model, including Books, Top10perc, and Personal. While look at the patterns at significant predictors, the plots are slightly different from summary table. Based on the plots, the predictors `perc.alumni`, `Grad.Rate`, `PhD`, `S.F.Ratio`, `Room.Board`, `Accept`, `Apps`, `F.Undergrad`, and `Expend` have positive relation with the outcome. The remaining predictors tend to have a negative or close to constant relationship with the outcome. The deviance explained by the model is 83.4%, adjusted R-squared value is 0.819, which is quite close to 1. Thus the GAM model fits the data quite well.
+
+## Test Error
+
+```{r}
+set.seed(123)
+
+gam.pred <- predict(gam.m1, newdata = x2)
+
+test_error_gam <- mean((gam.pred - y2)^2)
+test_error_gam
+RMSE_gam <- sqrt(test_error_gam)
+RMSE_gam
+```
+
+The test error is 5125770, and RMSE is 2264.016.
+
+# (c)
+
+Train a multivariate adaptive regression spline (MARS) model using all the predictors. Report the final model. Present the partial dependence plot of an arbitrary predictor in your final model. Report the test error.
+
+## Final model
+```{r}
+set.seed(123)
+
+# # create grid of all possible pairs that can take degree and nprune values
+# mars_grid <- expand.grid(degree = 1:3, # number of possible product hinge functions in 1 term
+#                          nprune = 2:16) # Upper bound of number of terms in model
+# 
+# mars.fit <- train(x, y, # training dataset
+#                   method = "earth",
+#                   tuneGrid = mars_grid,
+#                   trControl = ctrl1) # 10-fold CV
+# 
+# ggplot(mars.fit)
+# mars.fit$bestTune
+# coef(mars.fit$finalModel)
+
+# create wider range of nprune to include the minimum RMSE obtained from CV
+mars_grid <- expand.grid(degree = 1:3, # number of possible product hinge functions in 1 term
+                         nprune = 2:30) # Upper bound of number of terms in model
+
+mars.fit <- train(x, y, # training dataset
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl1) # 10-fold CV
+
+ggplot(mars.fit)
+mars.fit$bestTune
+coef(mars.fit$finalModel)
+```
+
+## Partial dependence plot
+```{r}
+p1 <- pdp::partial(mars.fit, 
+                   pred.var = c("perc.alumni"), 
+                   grid.resolution = 10) %>% 
+  autoplot()
+
+# Plot of an interaction partial dependence plot between arbitrary predictors in the final model Apps and Accept
+p2 <- pdp::partial(mars.fit, 
+                   pred.var = c("Apps", "Accept"),
+                   grid.resolution = 10) %>%
+  pdp::plotPartial(levelplot = FALSE, 
+                   zlab = "yhat", 
+                   drape = TRUE,
+                   screen = list(z = 20, x = -60))
+
+# combine two plots
+grid.arrange(p1, p2, ncol = 2)
+```
+
+## Test error
+
+```{r}
+set.seed(123)
+
+mars.pred <- predict(mars.fit, newdata = x2)
+
+test_error_mars <- mean((mars.pred - y2)^2)
+test_error_mars
+RMSE_mars <- sqrt(test_error_mars)
+RMSE_mars
+```
+
+The MARS test error is 3483157, and RMSE is 1866.322. Since MARS has smaller test error than GAM model, it is better than GAM model.
+
+# (d)
+
+In this data example, do you prefer the use of MARS model over a linear model when predicting the out-of-state tuition? Why? For general applications, do you think MARS is a better approach compared to a linear model?
+
+## MARS model over a linear model
+```{r}
+set.seed(123)
+model.lm <- train(x, y,
+                  method = "lm",
+                  trControl = ctrl1)
+
+resamp <- resamples(list(MARS = mars.fit, LM = model.lm))
+
+summary(resamp)
+bwplot(resamp, metric = "RMSE")
+```
+
+I prefer the MARS model over a linear model. The best model for predicting the out-of-state tuition is the MARS model since it has the lowest mean value of RMSE comparing to a linear model. 
+
+## Compare MARS and linear models for general applications [10pts/100pts]
+
+For general applications, which is better always depends on the underlying true model, so neither model will always be better.
