@@ -1,0 +1,289 @@
+---
+title: "P8106_HW3_yh3554"
+author: "Yi Huang"
+date: "2023-03-22"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  keep_tex: true
+  html_document:
+header-includes:
+- \usepackage{hyperref}
+- \hypersetup{colorlinks=false, linktoc=all, linkcolor=red}
+- \AtBeginDocument{\addtocontents{toc}{\protect\hypertarget{mylink}{}\hspace{0.25in}\hspace{0.5in}\par}}
+- \usepackage{placeins}
+- \usepackage{caption}
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
+```
+
+\newpage
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(caret)
+library(GGally)
+library(glmnet)
+library(MASS) #lda
+library(pROC)
+```
+
+
+# Data Science II Homework 3
+
+In this problem, you will develop a model to predict whether a given car gets high or low gas mileage based on the dataset “auto.csv”. The dataset contains 392 observations. The response variable is mpg cat, which indicates whether the miles per gallon of a car is high or low. The predictors are:\
+\
+- cylinders: Number of cylinders between 4 and 8 \
+- displacement: Engine displacement (cu. inches) \
+- horsepower: Engine horsepower \
+- weight: Vehicle weight (lbs.) \
+- acceleration: Time to accelerate from 0 to 60 mph (sec.) \
+- year: Model year (modulo 100) \
+- origin: Origin of car (1. American, 2. European, 3. Japanese) \
+\
+Split the dataset into two parts: training data (70%) and test data (30%).
+
+# Dara preprocessing
+
+The "auto.csv" dataset contains 1 binary response variable `mpg_cat`, 1 categorical variable `origin`, and 5 continuous variables `displacement`, `horsepower`, `weight`, `acceleration`, and `year`. There are 392 observations and no missing data.
+```{r}
+# load data
+dat <- read.csv("data/auto.csv") %>% na.omit() %>% 
+  mutate(
+    mpg_cat = factor(mpg_cat, levels = c("low", "high")),
+    origin = factor(origin))
+head(dat)
+summary(dat)
+
+contrasts(dat$mpg_cat)
+
+# correlation plot and boxplot
+dat %>% ggpairs(., mapping = ggplot2::aes(colour = mpg_cat), lower = list(combo = 'dot_no_facet')) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# set seed for reproducibility
+set.seed(123)
+
+# split the data into training data (70%) and test data (30%)
+# specify rows of training data (70% of the dataset)
+train_rows <- createDataPartition(dat$mpg_cat, 
+                              p = 0.7,
+                              list = F)
+dat2 <- model.matrix(mpg_cat~., dat)[,-1]
+
+# training data
+x <- dat2[train_rows,]
+y <- dat$mpg_cat[train_rows]
+
+# test data
+x2 <- dat2[-train_rows,]
+y2 <- dat$mpg_cat[-train_rows]
+
+# resampling method repeated cross-validation
+ctrl <- trainControl(method = "repeatedcv",
+                     repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+```
+
+
+# (a) Logistic regression
+
+Perform a logistic regression using the training data. Do any of the predictors appear to be statistically significant? If so, which ones? Set a probability threshold to determine class labels and compute the confusion matrix using the test data. Briefly explain what the confusion matrix is telling you.
+
+## Perform a logistic regression using the training data. Interpret the results.
+```{r}
+# set seed for reproducibility
+set.seed(123)
+
+# logistic regression using train data
+glm.fit <- glm(mpg_cat ~ .,
+               data = dat,
+               subset = train_rows,
+               family = binomial(link = "logit"))
+summary(glm.fit)
+
+# Using caret
+model.glm <- train(x,
+                   y,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+Based on the summary table, the predictors `weight`, `year`, `origin` are statistically significant since their p-value are relatively smaller than $\alpha = 0.05$.\
+**Interpretation for statistically significant predictors**\
+* $\beta_{weight}$: the log odds of high car gas mileage for one lbs increase in vehicle weight is `r round(summary(glm.fit)$coefficient[5], 4)`\
+* $\beta_{year}$: the log odds of high car gas mileage for one lbs increase in vehicle year is `r round(summary(glm.fit)$coefficient[7], 4)`\
+* $\beta_{origin2}$: the log odds ratio of high car gas mileage comparing European model to American model is `r round(summary(glm.fit)$coefficient[8], 4)` \
+* $\beta_{origin3}$: the log odds ratio of high car gas mileage comparing Japanese model to American model is `r round(summary(glm.fit)$coefficient[9], 4)`\
+
+## Set a probability threshold and compute the confusion matrix using test data. 
+
+Set probability threshold the classifier cut-off = 0.5\
+
+```{r}
+set.seed(123)
+test.pred.prob <- predict(glm.fit, newdata = dat[-train_rows,],
+                           type = "response")
+test.pred <- rep("low", length(test.pred.prob))
+test.pred[test.pred.prob>0.5] <- "high"
+confusionMatrix(data = as.factor(test.pred),
+                reference = dat$mpg_cat[-train_rows],
+                positive = "high")
+```
+
+## Briefly explain what the confusion matrix.
+
+Based on the confusion matrix, the correction prediction or accuracy can be calculated as $(54+55)/(54+3+4+55) = 0.9397$. The sensitivity is $55/58=0.9483$, and specificity is $54/58=0.9310$. The balanced accuracy is the average of sensitivity and specificity that is 0.9397. Since the accuracy is close to 1, the prediction is pretty good.
+
+# (b) MARS
+
+Train a multivariate adaptive regression spline (MARS) model using the training data.
+
+```{r}
+set.seed(123)
+
+model.mars <- train(x, # train x
+                    y, # train y
+                    method = "earth",
+                    tuneGrid = expand.grid(degree = 1:4, 
+                                           nprune = 2:20),
+                    metric = "ROC",
+                    trControl = ctrl)
+
+ggplot(model.mars)
+
+model.mars$bestTune
+coef(model.mars$finalModel)
+```
+
+# (c) LDA
+
+Perform LDA using the training data. Plot the linear discriminants in LDA.
+
+```{r}
+set.seed(123)
+lda.fit <- lda(mpg_cat~., data = dat,
+               subset = train_rows)
+
+plot(lda.fit)
+
+lda.fit$scaling
+
+# Using caret
+model.lda <- train(x, #train x
+                   y, #train y
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+summary(model.lda)
+
+# lda model with continues predictor only because 
+# lda model does not capture categorical predictors well
+model.lda.cont <- train(x[,1:6], #continues train x
+                   y, #train y
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+summary(model.lda.cont)
+```
+
+# (d) Comparing models
+
+Which model will you use to predict the response variable? Plot its ROC curve using the test data. Report the AUC and the misclassification error rate.
+
+## Which model will you use to predict the response variable?
+```{r}
+set.seed(123)
+resamp <- resamples(list(Logit = model.glm, 
+                         MARS = model.mars,
+                         LDA = model.lda,
+                         LDA_cont = model.lda.cont
+                         ))
+summary(resamp)
+bwplot(resamp, metric = "ROC")
+```
+While comparing logistic, MARS, and lda through resampling method, MARS model has the highest mean ROC value 0.9700 compare to other three models. Thus I would prefer using MARS model to predict the response variable. On the other hand, the mean ROC value of lda.cont model is 0.9540, lda model is 0.9510, implies the mean ROC value increases after removing categorical predictor `origin`, lda_cont indeed better than the lda model.
+
+## Plot its ROC curve using the test data. Report the AUC and the misclassification error rate.
+```{r}
+set.seed(123)
+# plot roc using test data for all models
+glm.pred.p <- predict(model.glm, newdata = x2, type = "prob")[,2]
+mars.pred.p <- predict(model.mars, newdata = x2, type = "prob")[,2]
+lda.pred.p <- predict(model.lda, newdata = x2, type = "prob")[,2]
+lda.cont.pred.p <- predict(model.lda.cont, newdata = x2[,1:6], type = "prob")[,2] #remove origin from test data
+
+roc.glm <- roc(dat$mpg_cat[-train_rows], glm.pred.p)
+roc.mars <- roc(dat$mpg_cat[-train_rows], mars.pred.p)
+roc.lda <- roc(dat$mpg_cat[-train_rows], lda.pred.p)
+roc.lda.cont <- roc(dat$mpg_cat[-train_rows], lda.cont.pred.p)
+
+# auc
+auc <- c(roc.glm$auc[1], 
+         roc.mars$auc[1], 
+         roc.lda$auc[1],
+         roc.lda$auc.cont[1])
+
+modelNames <- c("glm","mars","lda","lda.cont")
+
+ggroc(list(roc.glm, roc.mars, roc.lda, roc.lda.cont), legacy.axes = TRUE) +
+  scale_color_discrete(labels = paste0(modelNames, " (", round(auc,4),")"),
+                       name = "Models (AUC)") +
+  geom_abline(intercept = 0, slope = 1, color = "grey")
+
+# misclassification error rate
+glm.pred <- rep("low", length(glm.pred.p))
+glm.pred[glm.pred.p>0.5] <- "high"
+glm_cm <- confusionMatrix(data = as.factor(glm.pred),
+                reference = y2,
+                positive = "high")
+glm_cm
+
+
+mars.pred <- rep("low", length(mars.pred.p))
+mars.pred[mars.pred.p>0.5] <- "high"
+mars_cm <- confusionMatrix(data = as.factor(mars.pred),
+                reference = y2,
+                positive = "high")
+mars_cm
+
+
+lda.pred <- rep("low", length(lda.pred.p))
+lda.pred[lda.pred.p>0.5] <- "high"
+lda_cm <- confusionMatrix(data = as.factor(lda.pred),
+                reference = y2,
+                positive = "high")
+lda_cm
+
+
+lda.cont.pred <- rep("low", length(lda.cont.pred.p))
+lda.cont.pred[lda.cont.pred.p>0.5] <- "high"
+lda.cont_cm <- confusionMatrix(data = as.factor(lda.pred),
+                reference = y2,
+                positive = "high")
+lda.cont_cm
+
+# misclassification error rate
+glm_er <- 1-glm_cm$byClass[["Balanced Accuracy"]]
+round(glm_er, 4)
+mars_er <- 1-mars_cm$byClass[["Balanced Accuracy"]]
+round(mars_er, 4)
+lda_er <- 1-lda_cm$byClass[["Balanced Accuracy"]]
+round(lda_er, 4)
+lda_cont_er <- 1-lda.cont_cm$byClass[["Balanced Accuracy"]]
+round(lda_cont_er, 4)
+```
+Test data performance:\
+The plot of ROC curve using test data shows logistic regression model and lda_cont model have the highest AUC values (0.9786) than mars and lda models. The prediction performance of both logistic regression model and lda_cont are very good.\
+Misclassficition error rate = 1 - accuracy. If set the classifier cut-off to be 0.5, the logistic regression model has the lowest misclassification error rate 0.0603 compare to all other models. However, final decision should not depend on misclassfication error rate because this is only at particular threshold, the result might be different if we change the threshold.
