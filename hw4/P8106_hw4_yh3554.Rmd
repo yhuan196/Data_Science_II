@@ -1,0 +1,362 @@
+---
+title: "P8106_hw4_yh3554"
+subtitle: "Data Science II Homework 4"
+author: "Yi Huang"
+date: "2023-04-21"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+  keep_tex: true
+  html_document:
+header-includes:
+- \usepackage{hyperref}
+- \hypersetup{colorlinks=false, linktoc=all, linkcolor=red}
+- \AtBeginDocument{\addtocontents{toc}{\protect\hypertarget{mylink}{}\hspace{0.25in}\hspace{0.5in}\par}}
+- \usepackage{placeins}
+- \usepackage{caption}
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+# - \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+# - \fancypagestyle{plain}{\pagestyle{fancy}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, 
+                      warning = FALSE, 
+                      fig.align = "center")
+```
+
+\newpage
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(caret)
+library(ISLR)
+library(mlbench)
+library(rpart)
+library(rpart.plot)
+library(party)
+library(partykit)
+library(pROC)
+library(ranger)
+library(gbm)
+library(pdp)
+library(ggplot2)
+library(parallel)
+library(doParallel)
+```
+
+
+# Problem 1. 
+In this exercise, we will build tree-based models using the College data (see “College.csv” in Homework 2). The response variable is the out-of-state tuition (Outstate). Partition the dataset into two parts: training data (80%) and test data (20%).\
+\
+The predictors are:\
+
+- Apps: Number of applications received\
+- Accept: Number of applications accepted\
+- Enroll: Number of new students enrolled\
+- Top10perc: Pct. new students from top 10% of H.S. class\
+- Top25perc: Pct. new students from top 25% of H.S. class\
+- F.Undergrad: Number of fulltime undergraduates\
+- P.Undergrad: Number of parttime undergraduates\
+- Room.Board: Room and board costs\
+- Books: Estimated book costs\
+- Personal: Estimated personal spending\
+- PhD: Pct. of faculty with Ph.D.’s\
+- Terminal: Pct. of faculty with terminal degree\
+- S.F.Ratio: Student/faculty ratio\
+- perc.alumni: Pct. alumni who donate\
+- Expend: Instructional expenditure per student\
+- Grad.Rate: Graduation rate\
+\
+
+## Data cleaning
+
+```{r load data}
+# load data
+dat <- read.csv("data/College.csv")[,-1]
+dat <- na.omit(dat)
+head(dat)
+summary(dat)
+set.seed(123)
+train_rows <- createDataPartition(y = dat$Outstate, 
+                                p = 0.8, 
+                                list = FALSE)
+
+# training data
+dat_train <- dat[train_rows, ]
+x <- dat_train %>% select(-Outstate)
+y <- dat_train$Outstate
+# test data
+dat_test <- dat[-train_rows, ]
+x2 <- dat_test %>% select(-Outstate)
+y2 <- dat_test$Outstate
+
+set.seed(123)
+# resampling method
+ctrl <- trainControl(method = "cv")
+```
+
+
+## (a) 
+Build a regression tree on the training data to predict the response. Create a plot of the tree.
+
+### (i) Build a regression tree on train data
+```{r}
+set.seed(123)
+rpart.fit <- train(Outstate ~ . , 
+                   dat_train, 
+                   method = "rpart",
+                   tuneGrid = data.frame(cp = exp(seq(-6,1, length = 100))),
+                   trControl = ctrl)
+
+ggplot(rpart.fit, highlight = TRUE) 
+
+rpart.fit$finalModel$tuneValue[[1]]
+```
+
+### (ii) create a plot of the tree
+
+```{r tree plot}
+rpart.plot(rpart.fit$finalModel)
+```
+
+
+## (b) 
+Perform random forest on the training data. Report the variable importance and the test error.
+
+### (i) Perform Random forest on train data
+```{r}
+rf.grid <- expand.grid(mtry = 1:16,
+                       splitrule = "variance",
+                       min.node.size = 1:6)
+set.seed(123)
+no_cores <- detectCores() - 1
+cl <- makePSOCKcluster(no_cores)
+registerDoParallel(cl)
+rf.fit <- train(Outstate ~ . , 
+                dat_train, 
+                method = "ranger",
+                tuneGrid = rf.grid,
+                trControl = ctrl)
+stopCluster(cl)
+registerDoSEQ()
+ggplot(rf.fit, highlight = TRUE)
+rf.fit$bestTune
+```
+
+The best tuning parameters are `mtry = 8` with `min.node.size = 2`.
+
+### (ii) Report the variable importance and the test error.
+
+```{r}
+set.seed(123)
+# variable importance
+rf.final.per <- ranger(Outstate ~ . , 
+                        dat_train,
+                        mtry = rf.fit$bestTune[[1]], 
+                        splitrule = "variance",
+                        min.node.size = rf.fit$bestTune[[3]],
+                        importance = "permutation",
+                        scale.permutation.importance = TRUE) 
+barplot(sort(ranger::importance(rf.final.per), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+# test error
+rf.predict <- predict(rf.fit, newdata = dat_test)
+rf.RMSE <- RMSE(rf.predict, y2)
+rf.RMSE 
+```
+
+The top 6 most important variables are `Expend`, `Room.Board`, `Apps`, `Accept`, `Terminal`, and `Top10perc`. The RMSE of test set is `r round(rf.RMSE, 2)`.
+
+## (c) 
+Perform boosting on the training data. Report the variable importance and the test error.
+
+### (i) Perform Boosting on the training data
+```{r}
+gbm.grid <- expand.grid(n.trees = c(1000, 2000, 3000, 4000, 5000),
+                        interaction.depth = 1:6,
+                        shrinkage = seq(0.001, 0.005, by = 0.002),
+                        n.minobsinnode = c(3:15))
+    
+set.seed(123)
+no_cores <- detectCores() - 1
+cl <- makePSOCKcluster(no_cores)
+registerDoParallel(cl)
+gbm.fit <- train(Outstate ~ . ,
+                 dat_train,
+                 method = "gbm",
+                 tuneGrid = gbm.grid,
+                 trControl = ctrl,
+                 verbose = FALSE)
+stopCluster(cl)
+registerDoSEQ()
+ggplot(gbm.fit, highlight = TRUE)
+gbm.fit$bestTune
+```
+
+The best tuning parameters are `n.trees = 1000`, `interaction.depth = 6`, `shrinkage = 0.005` and `nminobsinode = 15`.
+
+### (ii) Report the variable importance and the test error.
+
+```{r}
+set.seed(123)
+gbm.final.per <- ranger(Outstate ~ . , 
+                        dat_train,
+                        n.trees = gbm.fit$bestTune[[1]], 
+                        splitrule = "variance",
+                        interaction.depth = gbm.fit$bestTune[[2]],
+                        shrinkage = gbm.fit$bestTune[[3]],
+                        n.minobsinnode = gbm.fit$bestTune[[4]],
+                        importance = "permutation",
+                        scale.permutation.importance = TRUE) 
+barplot(sort(ranger::importance(gbm.final.per), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+# test error
+gbm.predict <- predict(gbm.fit, newdata = dat_test)
+gbm.RMSE <- RMSE(gbm.predict, y2)
+gbm.RMSE 
+```
+
+The top 6 most important variables are `Expend`, `Room.Board`, `Apps`, `Terminal`, `Top10perc`, and `Accept`. The RMSE of test set is `r round(gbm.RMSE, 2)`.
+
+
+# Problem 2. 
+This problem involves the OJ data in the ISLR package. The data contains 1070 purchases where the customers either purchased Citrus Hill or Minute Maid Orange Juice. A number of characteristics of customers and products are recorded. Create a training set containing a random sample of 700 observations, and a test set containing the remaining observations.
+
+## Data cleaning
+```{r}
+data(OJ)
+OJ <- na.omit(OJ)
+set.seed(123)
+
+train_rows2 <- createDataPartition(y = OJ$Purchase, 
+                                   p = 0.8, 
+                                   list = FALSE)
+
+# training data
+OJ_train <- OJ[train_rows2, ]
+# test data
+OJ_test <- OJ[-train_rows2, ]
+
+# resampling method
+ctrl1 <- trainControl(method = "cv",
+                      classProbs = TRUE)
+
+set.seed(123)
+ctrl2 <- trainControl(method = "cv",
+                     classProbs = TRUE, 
+                     summaryFunction = twoClassSummary)
+```
+
+
+## (a) 
+### (i)
+Build a classification tree using the training data, with Purchase as the response and the other variables as predictors. Which tree size corresponds to the lowest cross-validation error? 
+
+```{r}
+set.seed(123)
+rpart.fit.OJ <- train(Purchase ~ . , 
+                      OJ_train,
+                      method = "rpart",
+                      tuneGrid = data.frame(cp = exp(seq(-6,-3, len = 50))),
+                      trControl = ctrl2,
+                      metric = "ROC")
+ggplot(rpart.fit.OJ, highlight = TRUE)
+rpart.fit.OJ$bestTune
+# summary(rpart.fit.OJ)
+rpart.plot(rpart.fit.OJ$finalModel)
+```
+
+The tree size of 13 has lowest cross-validation error with cp =`r round(rpart.fit.OJ$bestTune, 6)`.\
+Note: tree size = number of split + 1
+
+### (ii)
+Is this the same as the tree size obtained using the 1 SE rule?
+
+```{r}
+set.seed(123)
+tree1 <- rpart(formula = Purchase ~ . , 
+               OJ_train, 
+               control = rpart.control(cp = 0))
+cpTable <- printcp(tree1)
+plotcp(tree1)
+# rpart.plot(tree1)
+
+set.seed(123)
+# 1SE rule
+minErr <- which.min(cpTable[,4])
+tree2 <- prune(tree1,cp = cpTable[cpTable[,4]<cpTable[minErr,4]+cpTable[minErr,5],1][1])
+cpTable <- printcp(tree2)
+rpart.plot(tree2)
+plotcp(tree2)
+```
+
+Under 1 SE rule, the tree size with lowest cross-validation error is 7. The tree size obtained by using cross validation is different from the tree size obtained by using 1 SE rule.
+
+
+## (b) 
+### (i) 
+Perform boosting on the training data and report the variable importance. 
+
+```{r}
+gbmA.grid <- expand.grid(n.trees = c(1000,2000,3000,4000,5000),
+                         interaction.depth = 1:6,
+                         shrinkage = c(0.0005,0.001,0.002),
+                         n.minobsinnode = 1)
+
+set.seed(123)
+no_cores <- detectCores() - 1
+cl <- makePSOCKcluster(no_cores)
+registerDoParallel(cl)
+gbmA.fit <- train(Purchase ~ . , 
+                  OJ_train, 
+                  tuneGrid = gbmA.grid,
+                  trControl = ctrl2,
+                  method = "gbm",
+                  distribution = "adaboost",
+                  metric = "ROC",
+                  verbose = FALSE)
+stopCluster(cl)
+registerDoSEQ()
+ggplot(gbmA.fit, highlight = TRUE)
+
+summary(gbmA.fit$finalModel, las = 2, cBars = 19, cex.names = 0.6) %>% 
+  knitr::kable(digits = 3, caption = "Variable importance from boosting model")
+```
+
+In the boosting model, the top 2 most important variables are `LoyalCH` and `PriceDiff`.
+
+### (ii) 
+What is the test error rate?
+
+```{r}
+gbmA.pred <- predict(gbmA.fit, newdata = OJ_test, type = "raw")
+error.rate.gbmA <- mean(gbmA.pred != OJ$Purchase[-train_rows2])
+error.rate.gbmA
+```
+
+The test error rate is `r round(error.rate.gbmA, 3)`.
+
+## Additional analysis: comparing classfication tree and boostrap 
+
+Report cross-validation results on train data
+
+```{r}
+set.seed(123)
+resamp <- resamples(list( ctrees = rpart.fit.OJ,
+                         gbmA = gbmA.fit))
+
+summary(resamp)
+```
+
+Based on the cross-validation results on train data, bootstrap has a higher mean ROC value, implies bootstrap method performs better than classification tree.
