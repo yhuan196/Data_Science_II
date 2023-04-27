@@ -1,0 +1,745 @@
+---
+title: "P8106_Midterm_Code_yh3554"
+author: "Yi Huang"
+date: "2023-03-30"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  keep_tex: true
+  html_document:
+header-includes:
+- \usepackage{hyperref}
+- \hypersetup{colorlinks=false, linktoc=all, linkcolor=red}
+- \AtBeginDocument{\addtocontents{toc}{\protect\hypertarget{mylink}{}\hspace{0.25in}\hspace{0.5in}\par}}
+- \usepackage{placeins}
+- \usepackage{caption}
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, 
+                      warning = FALSE, 
+                      fig.align = "center",
+                      fig.width = 8, 
+                      fig.height = 6,
+                      out.width = "90%")
+```
+
+\newpage
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(gtsummary) # data summary table
+library(ggplot2)
+library(GGally) # ggplot, ggpair
+library(viridis) # color and theme
+library(caret)
+library(doBy)
+library(glmnet)
+library(earth)
+library(randomForest)
+library(ranger)
+library(gbm)
+library(mgcv)
+library(nlme)
+library(vip)
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+viridis::scale_fill_viridis()
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+# Background
+## Description of each variable:
+
+Variable Name (Column Name): Description
+
+ID (id) :Participant ID
+
+Gender (gender): 1 = Male, 0 = Female
+
+Race/ethnicity (race): 1 = White, 2 = Asian, 3 = Black, 4 = Hispanic
+
+Smoking (smoking): Smoking status; 0 = Never smoked, 1 = Former smoker, 2 = Current smoker
+
+Height (height): Height (in centimeters)
+
+Weight (weight): Weight (in kilograms)
+
+BMI (bmi): Body Mass Index; BMI = weight (in kilograms) / height (in meters) squared
+
+Hypertension (hypertension): 0 = No, 1 = Yes
+
+Diabetes (diabetes): 0 = No, 1 = Yes
+
+Systolic blood pressure (SBP): Systolic blood pressure (in mm/Hg)
+
+LDL cholesterol (LDL): LDL (low-density lipoprotein) cholesterol (in mg/dL)
+
+Vaccination status at the time of infection (vaccine): 0 = Not vaccinated, 1 = Vaccinated
+
+Severity of COVID-19 infection (severity): 0 = Not severe, 1= Severe
+
+Study (study): The study (A/B/C) that the participant belongs to
+
+Time to recovery (tt_recovery_time): Time from COVID-19 infection to recovery in days
+
+## The dataset in "recovery.RData" consists of 10000 participants. 
+
+In your analysis, please draw a random sample of 2000 participants using the following R code:
+
+set.seed([last four digits of your UNI]) 
+
+dat <- dat[sample(1:10000, 2000),]
+
+The resulting dat object will contain a random sample of 2000 participants that you can use for your analysis.
+
+# Data Cleaning and Visulizations
+## Load data
+
+```{r}
+# set seed for reproducibility
+set.seed(3554)
+
+# load data
+load("recovery.RData")
+dat <- dat[sample(1:10000, 2000),]
+```
+
+## Data Cleaning
+
+```{r}
+dat <- dat %>% 
+  mutate(gender = factor(gender),
+         hypertension = factor(hypertension),
+         diabetes = factor(diabetes),
+         vaccine = factor(vaccine),
+         severity = factor(severity),
+         study = factor(study),
+)
+```
+
+## Exploratory analysis and data visualization:
+
+In this section, use appropriate visualization techniques to explore the dataset and identify any patterns or relationships in the data.
+
+### EDA
+```{r}
+summary(dat)
+
+dat %>% select(age, height, weight, bmi, SBP, LDL, 
+               recovery_time, gender, race, smoking, 
+               hypertension, diabetes, vaccine, severity, 
+               study) %>% tbl_summary()
+
+dat %>% select(age, height, weight, bmi, SBP, LDL, 
+               recovery_time, gender, race, smoking, 
+               hypertension, diabetes, vaccine, severity, 
+               study) %>% tbl_summary(by = study)
+```
+## Plots
+```{r}
+ggpairs(dat, columns = c(1, 5, 6, 7, 10, 11, 15), ggplot2::aes(colour=gender))
+ggsave(file="image/gender_ggpair_cont.png",width=10,height=7)
+
+ggpairs(dat, columns = c(2, 3, 4, 8, 9, 12, 13, 14, 15), ggplot2::aes(colour=gender))
+ggsave(file="image/gender_ggpair_cat.png",width=10,height=7)
+
+# ggpairs(dat, title="correlogram with ggpairs()") 
+
+ggplot(dat, aes(x = age)) + 
+  geom_histogram()
+ggsave(file="image/age_histogram.png",width=8,height=5)
+
+ggplot(dat, aes(x = age, fill = study)) + 
+  geom_histogram(position = "dodge", binwidth = 2)
+ggsave(file="image/age_histogram_by_study.png",width=8,height=5)
+
+ggplot(dat, aes(x = study, y = age)) + 
+  geom_violin(aes(fill = study), alpha = .5) + 
+  stat_summary(fun = "median", color = "blue")
+ggsave(file="image/age_violin_plot.png",width=8,height=5)
+```
+
+## Split the data 
+```{r}
+set.seed(3554)
+# split the data into training data (70%) and test data (30%)
+# specify rows of training data (70% of the dataset)
+train_rows <- createDataPartition(dat$recovery_time, 
+                              p = 0.7,
+                              list = F)
+dat <- dat[,-1]
+dat2 <- model.matrix(recovery_time~., dat)[,-1]
+
+# train for viz
+dat_train <- dat[train_rows,]
+dat_test <- dat[-train_rows,]
+
+# training data
+train_x <- dat2[train_rows,]
+train_y <- dat$recovery_time[train_rows]
+train_x1 <- dat[train_rows, -c(2, 3, 4, 8, 9, 12, 13, 14)] #continuous predictors
+
+# test data
+test_x <- dat2[-train_rows,]
+test_y <- dat$recovery_time[-train_rows]
+test_x1 <- dat[-train_rows, -c(2, 3, 4, 8, 9, 12, 13, 14)] #continuous predictors
+
+# resampling method repeated cross-validation
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10,
+                     repeats = 10)
+
+ctrl1 <- trainControl(method = "repeatedcv", 
+                      selectionFunction = "oneSE", 
+                      number = 10, 
+                      repeats = 10)
+
+ctrl2 <- trainControl(method = "cv", 
+                      number = 10)
+
+ctrl3 <- trainControl(method = "cv")
+```
+
+### Scatter Plot use `feturePlot` on train data
+```{r}
+# create dataset for exploratory analysis and data visualization
+dat_train <- dat_train %>%
+  mutate(study = case_when( # turn study (character variable) into a numeric variable
+    study == "A" ~ 1,
+    study == "B" ~ 2,
+    study == "C" ~ 3))
+# Find the remaining non-numeric columns
+non_numeric_cols <- sapply(dat_train, function(x) !is.numeric(x))
+
+# Convert non-numeric columns to numeric
+dat_train[, non_numeric_cols] <- lapply(dat_train[, non_numeric_cols], as.numeric) 
+# turn factor variables into numeric variables
+# set various graphical parameters (color, line type, background, etc) 
+# to control the look of trellis displays
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+featurePlot(x = dat_train[ ,1:14],
+            y = dat_train[ ,15],
+            plot = "scatter",
+            span = .5,
+            labels = c("Predictors (Xs)", "COVID-19 Recovery Time (Y)"),
+            main = "Lattice Plot",
+            type = c("p", "smooth"))
+```
+
+## `preProcess` in `train()`
+
+```{r}
+# fit.lm <- train(x = train_x,
+#                 y = train_y,
+#                 preProcess = c("knnImpute"), # bagImpute/medianImpute
+#                 method = "lm",
+#                 trControl = trainControl(method = "none",
+#                                          preProcOptions = list(k = 5)))
+# 
+# pred.lm <- predict(fit.lm, newdata = test_x)
+# 
+# mean((test_y - pred.lm)^2)
+# 
+# # Imputation is performed within the resampling process
+# fit.lm2 <- train(x = train_x,
+#                  y = train_y,
+#                  preProcess = c("knnImpute"), 
+#                  method = "lm",
+#                  trControl = trainControl(method = "cv",
+#                                           preProcOptions = list(k = 5)))
+# 
+# pred.lm2 <- predict(fit.lm2, newdata = test_x)
+# 
+# mean((test_y - pred.lm2)^2)
+```
+
+
+# Model training
+
+In this section, describe the models you used for predicting time to recovery from COVID-19. State the assumptions made by using the models. Provide a detailed description of the model training procedure and how you obtained the final model.
+
+## Linear regression model, KNN, ridge, lasso, lasso 1 se, elastic net, pls, gam, mars, bagging, random forest, boosting
+
+### 1. linear model
+```{r lm}
+## fit linear model on train data
+linear_model <- train(train_x,
+                      train_y,
+                      method = "lm", 
+                      trControl = ctrl)
+summary(linear_model)
+
+# view performance on the test set (RMSE)
+test_pred1 <- predict(linear_model, newdata = test_x) # test dataset
+test_rmse1 <- sqrt(mean((test_pred1 - test_y)^2))
+test_rmse1
+```
+
+### 2. KNN
+```{r}
+# fit knn on train data use caret
+kGrid <- expand.grid(k = seq(1, to = 40, by = 1))
+knn_model <- train(train_x,
+                   train_y,
+                   method = "knn",
+                   trControl = ctrl,
+                   tuneGrid = kGrid)
+ggplot(knn_model, highlight = TRUE)
+# knn with K = 18 was selected as the final model
+
+# view performance on the test set (RMSE)
+test_pred2 <- predict(knn_model, newdata = test_x) # test dataset
+test_rmse2 <- sqrt(mean((test_pred2 - test_y)^2))
+test_rmse2
+```
+
+### 3. Ridge regression
+```{r ridge}
+## fit ridge use caret
+ridge_model <- train(train_x,
+                     train_y,
+                     method = "glmnet", 
+                     tuneGrid = expand.grid(alpha = 0,
+                                          lambda = exp(seq(-20, 10, length = 100))),
+                     trControl = ctrl)
+plot(ridge_model, xTrans = log)
+ridge_model$bestTune
+
+## ridge use glmnet
+cv.ridge_fit <- cv.glmnet(train_x,
+                    train_y,
+                    alpha = 0,
+                    lambda = exp(seq(-20, 10, length = 100)))
+plot(cv.ridge_fit)
+
+# view performance on the test set (RMSE)
+test_pred3 <- predict(ridge_model, newdata = test_x) # test dataset
+test_rmse3 <- sqrt(mean((test_pred3 - test_y)^2))
+test_rmse3
+```
+
+### 4. Lasso regression
+```{r lasso}
+## fit lasso use caret
+lasso_model <- train(train_x, train_y,
+                     method = "glmnet",
+                     tuneGrid = expand.grid(alpha = 1,
+                                          lambda = exp(seq(-20, 10, length = 100))),
+                     trControl = ctrl)
+plot(lasso_model, xTrans = log)
+lasso_model$bestTune
+
+## fit lasso use glmnet
+cv.lasso_fit <- cv.glmnet(train_x,
+                          train_y,
+                          alpha = 1,
+                          lambda = exp(seq(-20, 10, length = 100)))
+plot(cv.lasso_fit)
+
+# view performance on the test set (RMSE)
+test_pred4 <- predict(lasso_model, newdata = test_x) # test dataset
+test_rmse4 <- sqrt(mean((test_pred4 - test_y)^2))
+test_rmse4
+```
+
+### 5. Lasso 1se regression
+```{r lasso 1se}
+lasso_1se <- train(train_x, train_y,
+                     method = "glmnet",
+                     tuneGrid = expand.grid(alpha = 1,
+                                          lambda = exp(seq(-20, 10, length = 100))),
+                     trControl = ctrl1)
+plot(lasso_1se, xTrans = log)
+lasso_1se$bestTune
+
+# view performance on the test set (RMSE)
+test_pred5 <- predict(lasso_1se, newdata = test_x) # test dataset
+test_rmse5 <- sqrt(mean((test_pred5 - test_y)^2))
+test_rmse5
+```
+
+### 6. Elastic net
+```{r elastic net}
+## fit elastic net
+enet_model <- train(train_x, 
+                  train_y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = seq(0, 1, length = 21),
+                                          lambda = exp(seq(-2, 2, length = 50))),
+                  trControl = ctrl)
+
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+                    superpose.line = list(col = myCol))
+plot(enet_model, par.settings = myPar)
+enet_model$bestTune
+
+# enet_2 <- train(train_x, train_y,
+#                    method = "glmnet",
+#                    tuneGrid = expand.grid(alpha = seq(0, 1, length = 10),
+#                                           lambda = exp(seq(-30,5, length = 100))),
+#                    trControl = ctrl)
+# plot(enet_2, par.settings = myPar)
+# enet_2$bestTune
+
+# view performance on the test set (RMSE)
+test_pred6 <- predict(enet_model, newdata = test_x) # test dataset
+test_rmse6 <- sqrt(mean((test_pred6 - test_y)^2))
+test_rmse6
+```
+
+### 7. Partial least squares regression
+```{r pls}
+pls_model <- train(train_x,
+                   train_y,
+                   method = "pls",
+                   tuneGrid = data.frame(ncomp = 1:18),
+                   trControl = ctrl,
+                   preProcess = c("center", "scale"))
+ggplot(pls_model, highlight = TRUE)
+ggsave(file="image/pls_number_of_component.png",width=10,height=7)
+
+# view performance on the test set (RMSE)
+test_pred7 <- predict(pls_model, newdata = test_x) # test dataset
+test_rmse7 <- sqrt(mean((test_pred7 - test_y)^2))
+test_rmse7
+```
+
+### 8. Generalised additive regression
+```{r gam}
+# gam use caret
+# fit GAM model using all predictors
+gam_model <- train(train_x, train_y, # training dataset
+                 method = "gam",
+                 trControl = ctrl,
+                 control = gam.control(maxit = 200)) 
+
+# gam_model <- train(train_x,
+#                    train_y,
+#                    trControl = ctrl2,
+#                    control = gam.control(maxit =100))
+
+gam_model$bestTune
+gam_model$finalModel
+plot(gam_model)
+summary(gam_model$finalModel)
+
+# view performance on the test set (RMSE)
+test_pred8 <- predict(gam_model, newdata = test_x) # test dataset
+test_rmse8 <- sqrt(mean((test_pred8 - test_y)^2))
+test_rmse8
+```
+
+### 9. Multivariate adaptive regression 
+```{r mars}
+set.seed(3554)
+
+# create dummy variables for categorical variables
+df_dummies <- data.frame(model.matrix(~ . - 1, 
+                                      # exclude ID and continuous variables
+                                      data = dat[, c("gender", "race", "smoking", "hypertension", "diabetes",
+                                                     "vaccine", "severity", "study")]), 
+                         # add continuous variables back to the data frame
+                         age = dat$age,
+                         height = dat$height,
+                         weight = dat$weight,
+                         bmi = dat$bmi,
+                         SBP = dat$SBP,
+                         LDL = dat$LDL,
+                         recovery_time = dat$recovery_time) 
+
+# rename df_dummies dataset as dat
+dat_mars <- df_dummies
+
+# training data
+dat_train_mars <- dat_mars[train_rows, ]
+x_mars <- model.matrix(recovery_time~.,dat_mars)[train_rows,-1]
+y_mars <- dat_mars$recovery_time[train_rows]
+
+# test data
+dat_test_mars <- dat_mars[-train_rows, ]
+x2_mars <- model.matrix(recovery_time~.,dat_mars)[-train_rows,-1]
+y2_mars <- dat_mars$recovery_time[-train_rows]
+
+# mars_grid <- expand.grid(degree = 1:5, # number of possible product hinge functions in 1 term
+#                          nprune = -5:17) # upper bound of number of terms in model
+
+# create grid of all possible pairs that can take degree and nprune values
+mars_grid <- expand.grid(degree = 1:3, # number of possible product hinge functions in 1 term
+                         nprune = 2:17) # upper bound of number of terms in model
+mars_model <- train(x_mars, y_mars, # training dataset
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl)
+ggplot(mars_model)
+print(plot(mars_model))
+summary(mars_model$finalModel)
+
+# view performance on the test set (RMSE)
+test_pred9 <- predict(mars_model, newdata = x2_mars) # test dataset
+test_rmse9 <- sqrt(mean((test_pred9 - dat_test_mars$recovery_time)^2))
+test_rmse9
+```
+
+### 10. Bagging
+```{r}
+set.seed(3554)
+bag_model <- randomForest(train_x,
+                          train_y,
+                          mtry = 18)
+
+# view performance on the test set (RMSE)
+test_pred10 <- predict(bag_model, newdata = test_x) # test dataset
+test_rmse10 <- sqrt(mean((test_pred10 - test_y)^2))
+test_rmse10
+```
+
+### 11. Random forest
+```{r}
+set.seed(3554)
+rf_fit <- randomForest(train_x,
+                         train_y,
+                         mtry = 6)
+
+# view performance on the test set (RMSE)
+test_pred11 <- predict(rf_fit, newdata = test_x) # test dataset
+test_rmse11 <- sqrt(mean((test_pred11 - test_y)^2))
+test_rmse11
+
+# dat3 <- dat
+# # use caret
+# # Try more if possible
+# rf.grid <- expand.grid(mtry = 1:18,
+#                        splitrule = "variance",
+#                        min.node.size = 1:6)
+# set.seed(3554)
+# rf.model <- train(recovery_time~.,
+#                   dat3[train_rows,],
+#                 method = "ranger",
+#                 tuneGrid = rf.grid,
+#                 trControl = ctrl3)
+# 
+# ggplot(rf.model, highlight = TRUE)
+
+rf.grid <- expand.grid(mtry = 1:18,
+                       splitrule = "variance",
+                       min.node.size = seq(from = 1, to = 50, by = 5))
+rf_model <- train(train_x,
+                  train_y,
+                method = "ranger",
+                tuneGrid = rf.grid,
+                trControl = ctrl3)
+ggplot(rf_model, highlight = TRUE)
+rf_model$bestTune
+
+# view performance on the test set (RMSE)
+test_pred_rf <- predict(rf_model, newdata = test_x) # test dataset
+test_rmse_rf <- sqrt(mean((test_pred_rf - test_y)^2))
+test_rmse_rf
+```
+
+### 12. Boosting
+```{r}
+set.seed(3554)
+# use gbm() function
+# dat3 <- dat
+# bst_fit <- gbm(recovery_time~.,
+#                  dat3[train_rows,],
+#                  distribution = "gaussian",
+#                  n.trees = 5000,
+#                  interaction.depth = 2,
+#                  shrinkage = 0.005,
+#                  cv.folds = 10,
+#                  n.cores = 2)
+# gbm.perf(bst_fit, method = "cv")
+# plot(bst_fit)
+# 
+# # view performance on the test set (RMSE)
+# test_pred12 <- predict(bst_fit, newdata = dat3[-train_rows,]) # test dataset
+# test_rmse12 <- sqrt(mean((test_pred12 - test_y)^2))
+# test_rmse12
+
+# # use caret
+# gbm.grid <- expand.grid(n.trees = c(5000,10000),
+#                         interaction.depth = 1:3,
+#                         shrinkage = c(0.005,0.01),
+#                         n.minobsinnode = c(1))
+# 
+# bst_model <- train(recovery_time~.,
+#                    dat3[train_rows,],
+#                    method = "gbm",
+#                    tuneGrid = gbm.grid,
+#                    trControl = ctrl3,
+#                    verbose = FALSE)
+# 
+# ggplot(gbm_model, highlight = TRUE)
+# 
+# # view performance on the test set (RMSE)
+# test_pred13 <- predict(bst_model, newdata = dat3[-train_rows,]) # test dataset
+# test_rmse13 <- sqrt(mean((test_pred13 - test_y)^2))
+# test_rmse13
+
+gbm.grid <- expand.grid(n.trees = 5000,
+                        interaction.depth = 1:3,
+                        shrinkage = c(0.005,0.01),
+                        n.minobsinnode = c(1))
+gbm_model <- train(train_x,
+                  train_y,
+                 method = "gbm",
+                 tuneGrid = gbm.grid,
+                 trControl = ctrl3,
+                 verbose = FALSE)
+
+ggplot(gbm_model, highlight = TRUE)
+
+# view performance on the test set (RMSE)
+test_pred13 <- predict(gbm_model, newdata = test_x) # test dataset
+test_rmse13 <- sqrt(mean((test_pred13 - test_y)^2))
+test_rmse13
+```
+
+## Results and Discussion:
+
+In this section, report the final model that you built for predicting time to recovery from COVID-19. Interpret the results. Assess the model's training/test performance.
+
+### Select model use CV result on train data
+Comparing linear regression model, KNN, ridge, lasso, lasso 1 se, elastic net, pls, gam, mars, regression trees, bagging, random forest, boosting using cv results on train data.
+```{r comparing models using cv result on train data}
+set.seed(3554)
+
+resamp <- resamples(list(lm = linear_model,
+                         knn = knn_model,
+                         ridge = ridge_model,
+                         lasso = lasso_model,
+                         lasso_1se = lasso_1se, 
+                         enet = enet_model,
+                         pls = pls_model,
+                         gam = gam_model,
+                         mars = mars_model))
+# summary(resamp)
+parallelplot(resamp, metric = "RMSE")
+bwplot(resamp, metric = "RMSE")
+
+resamp2 <- resamples(list(random_forest = rf_model,
+                         boosting = gbm_model))
+# summary(resamp2)
+parallelplot(resamp2, metric = "RMSE")
+bwplot(resamp2, metric = "RMSE")
+
+summary(resamp)
+summary(resamp2)
+```
+The best model is random forest since this model has the lowest mean value of Cross-validation RMSE 20.8315 on train data comparing to all other models. According to the cv results on train data, the second best model is MARS with mean value of RMSE 21.5259. We should always choose the model using CV results on train data rather than prediction error.
+
+### Prediction: Evaluating performance on test data
+
+```{r}
+# Linear regression model, KNN, ridge, lasso, lasso 1 se, elastic net, 
+# pls, gam, mars, bagging, random forest, boosting
+# lm_rmse <- test_rmse1
+# lm_rmse
+# 
+# knn_rmse <- test_rmse2
+# knn_rmse
+# 
+# ridge_rmse <- test_rmse3
+# ridge_rmse
+# 
+# lasso_rmse <- test_rmse4
+# lasso_rmse 
+# 
+# lasso_1se_rmse <- test_rmse5
+# lasso_1se_rmse
+# 
+# enet_rmse <- test_rmse6
+# enet_rmse
+# 
+# pls_rmse <- test_rmse7
+# pls_rmse
+# 
+# gam_rmse <- test_rmse8
+# gam_rmse
+
+mars_rmse <- test_rmse9
+mars_rmse
+
+# bag_rmse <- test_rmse10
+# bag_rmse 
+
+rf_rmse <- test_rmse_rf
+rf_rmse
+
+# gbm_rmse <- test_rmse13
+# gbm_rmse 
+```
+
+### Interpretation on best and second best model obtained from cv results on train data
+
+**Random forest**
+Variable importance
+```{r}
+# number of node
+ggplot(rf_model, highlight = TRUE)
+
+# variable importance
+set.seed(3554)
+dat3 <- dat
+rf2.final.per <- ranger(recovery_time~., 
+                        dat3[train_rows,],
+                        mtry = rf_model$bestTune[[1]], 
+                        splitrule = "variance",
+                        min.node.size = rf_model$bestTune[[3]],
+                        importance = "permutation",
+                        scale.permutation.importance = TRUE) 
+
+barplot(sort(ranger::importance(rf2.final.per), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+# set.seed(3554)
+# rf2.final.imp <- ranger(recovery_time~.,
+#                         dat3[train_rows,],
+#                         mtry = rf_model$bestTune[[1]],
+#                         splitrule = "variance",
+#                         min.node.size = rf_model$bestTune[[3]],
+#                         importance = "impurity")
+# 
+# barplot(sort(ranger::importance(rf2.final.imp), decreasing = FALSE),
+#         las = 2, horiz = TRUE, cex.names = 0.7,
+#         col = colorRampPalette(colors = c("cyan","blue"))(19))
+```
+
+
+
+**Mars**
+```{r}
+summary(mars_model)
+```
+
+
+# Conclusions
+
+In this section, summarize your findings from the model analysis and discuss the insights gained into predicting time to recovery from COVID-19.
+
