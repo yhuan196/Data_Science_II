@@ -112,7 +112,7 @@ set.seed(123)
 rpart.fit <- train(Outstate ~ . , 
                    dat_train, 
                    method = "rpart",
-                   tuneGrid = data.frame(cp = exp(seq(-6,1, length = 100))),
+                   tuneGrid = data.frame(cp = exp(seq(-6,4, length = 100))),
                    trControl = ctrl)
 
 ggplot(rpart.fit, highlight = TRUE) 
